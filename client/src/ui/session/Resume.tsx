@@ -7,7 +7,7 @@ import { useAccount } from '../../net/account.js';
 import { audioManager } from '../../sound/audioManager.js';
 
 /** Games this browser (or signed-in account) can go back to. */
-function useResumable(): [ResumableGame[], (roomId: string) => void] {
+export function useResumable(): [ResumableGame[], (roomId: string) => void] {
   const [games, setGames] = useState<ResumableGame[]>([]);
   const uid = useAccount((s) => s.uid);
 
@@ -36,6 +36,26 @@ function useResumable(): [ResumableGame[], (roomId: string) => void] {
   return [games, (roomId) => setGames((g) => g.filter((x) => x.roomId !== roomId))];
 }
 
+/** Rejoin a saved seat; `done(error)` reports failure (seat forgotten then). */
+export function resumeGame(g: ResumableGame, done: (error?: string) => void): void {
+  const saved = loadRecentSessions().find((s) => s.roomId === g.roomId && s.playerId === g.playerId);
+  const token = g.token ?? saved?.token;
+  audioManager.playClick();
+  socket.emit('room:reconnect', { roomId: g.roomId, playerId: g.playerId, token, name: g.myName }, (res) => {
+    if (!res.ok) {
+      forgetRecent(g.roomId, g.playerId);
+      done(res.error || 'That game is no longer available');
+      return;
+    }
+    const session = { roomId: g.roomId, playerId: g.playerId, token: res.token ?? token ?? '', name: g.myName };
+    adoptSession(session);
+    saveSession(session);
+    useGameStore.getState().setMyPlayerId(g.playerId);
+    audioManager.playJoin();
+    done();
+  });
+}
+
 export const ResumeCard: React.FC = () => {
   const [games, dismiss] = useResumable();
   const [busy, setBusy] = useState<string | null>(null);
@@ -43,23 +63,13 @@ export const ResumeCard: React.FC = () => {
   if (games.length === 0) return null;
 
   const resume = (g: ResumableGame) => {
-    const saved = loadRecentSessions().find((s) => s.roomId === g.roomId && s.playerId === g.playerId);
-    const token = g.token ?? saved?.token;
     setBusy(g.roomId);
-    audioManager.playClick();
-    socket.emit('room:reconnect', { roomId: g.roomId, playerId: g.playerId, token, name: g.myName }, (res) => {
+    resumeGame(g, (error) => {
       setBusy(null);
-      if (!res.ok) {
-        addToast(res.error || 'That game is no longer available', 'warning');
-        forgetRecent(g.roomId, g.playerId);
+      if (error) {
+        addToast(error, 'warning');
         dismiss(g.roomId);
-        return;
       }
-      const session = { roomId: g.roomId, playerId: g.playerId, token: res.token ?? token ?? '', name: g.myName };
-      adoptSession(session);
-      saveSession(session);
-      useGameStore.getState().setMyPlayerId(g.playerId);
-      audioManager.playJoin();
     });
   };
 

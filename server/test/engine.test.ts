@@ -73,15 +73,15 @@ describe('Monopoly Game Engine (LINE Get Rich rules)', () => {
     expect(engine.state.phase).toBe('TURN_ENDED');
   });
 
-  it('auctions a property the lander cannot afford', () => {
+  it('landing on a property you cannot afford leaves it unowned (no forced auction)', () => {
     const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
     engine.state.players[0].money = 10;
     engine.rollDice(1, 2);
 
     expect(engine.state.buyOffer).toBeNull();
-    expect(engine.state.phase).toBe('AUCTION');
-    engine.finishAuction();
+    expect(engine.state.phase).toBe('TURN_ENDED');
     expect(engine.state.properties[3].ownerId).toBeNull();
+    expect(engine.state.players[0].money).toBe(10);
   });
 
   it('triggers force-buy offer when landing on opponent developed property', () => {
@@ -97,6 +97,64 @@ describe('Monopoly Game Engine (LINE Get Rich rules)', () => {
     expect(engine.state.forceBuyOffer?.targetPlayerId).toBe('p2');
     expect(engine.state.forceBuyOffer?.buyerPlayerId).toBe('p1');
     expect(engine.state.forceBuyOffer?.price).toBe(220); // (60 + 50)*2
+  });
+
+  it('charges rent immediately on landing, then the takeover price on top when force-buying', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
+    engine.state.properties[3].ownerId = 'p2';
+    engine.state.properties[3].buildLevel = 1; // rent 20, takeover (60 + 50)*2 = 220
+
+    engine.rollDice(1, 2); // lands on tile 3
+
+    // Rent is already paid the moment the token lands, before any force-buy
+    // decision is made.
+    expect(engine.state.phase).toBe('FORCE_BUY_OFFER');
+    expect(engine.state.players[0].money).toBe(1500 - 20);
+    expect(engine.state.players[1].money).toBe(1500 + 20);
+
+    engine.respondToForceBuy(true);
+
+    // Accepting costs the takeover price on top of the rent already paid.
+    expect(engine.state.players[0].money).toBe(1500 - 20 - 220);
+    expect(engine.state.players[1].money).toBe(1500 + 20 + 220);
+  });
+
+  it('declining a force-buy offer costs nothing further -- rent was already paid', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
+    engine.state.properties[3].ownerId = 'p2';
+    engine.state.properties[3].buildLevel = 1;
+
+    engine.rollDice(1, 2);
+    expect(engine.state.players[0].money).toBe(1500 - 20);
+
+    engine.respondToForceBuy(false);
+
+    expect(engine.state.properties[3].ownerId).toBe('p2');
+    expect(engine.state.players[0].money).toBe(1500 - 20);
+    expect(engine.state.players[1].money).toBe(1500 + 20);
+    expect(engine.state.phase).toBe('TURN_ENDED');
+  });
+
+  it('force-buy mode "off" turns landing on a developed rival deed into plain rent', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true, forceBuyMode: 'off' });
+    engine.state.properties[3].ownerId = 'p2';
+    engine.state.properties[3].buildLevel = 1;
+
+    engine.rollDice(1, 2);
+
+    expect(engine.state.phase).toBe('TURN_ENDED');
+    expect(engine.state.forceBuyOffer).toBeNull();
+    expect(engine.state.players[1].money).toBeGreaterThan(1500); // p2 collected rent
+  });
+
+  it('force-buy mode "any" allows forcing raw, unbuilt land too', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true, forceBuyMode: 'any' });
+    engine.state.properties[3].ownerId = 'p2'; // raw land, buildLevel 0
+
+    engine.rollDice(1, 2);
+
+    expect(engine.state.phase).toBe('FORCE_BUY_OFFER');
+    expect(engine.state.forceBuyOffer?.price).toBe(120); // 60 * 2, no building cost
   });
 
   it('executes forced sale when buyer accepts: keeps build level, locks landmark', () => {
@@ -215,6 +273,108 @@ describe('Monopoly Game Engine (LINE Get Rich rules)', () => {
 
     engine.build(1);
     expect(engine.state.properties[1].buildLevel).toBe(1);
+  });
+
+  it('landing exactly on GO allows building on any owned property', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
+    engine.state.properties[1].ownerId = 'p1';
+    engine.state.properties[3].ownerId = 'p1';
+    engine.state.players[0].position = 0; // standing on GO, not on either deed
+    engine.state.players[0].lapsCompleted = 1;
+
+    engine.build(3);
+    expect(engine.state.properties[3].buildLevel).toBe(1);
+    engine.build(1);
+    expect(engine.state.properties[1].buildLevel).toBe(1);
+  });
+
+  it('caps voluntary mortgages at one per round, resetting when the player passes GO', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
+    engine.state.properties[1].ownerId = 'p1';
+    engine.state.properties[3].ownerId = 'p1';
+
+    engine.mortgage(1, true);
+    expect(engine.state.properties[1].isMortgaged).toBe(true);
+    expect(() => engine.mortgage(3, true)).toThrow(/one? property per round|1 property per round/i);
+    expect(engine.state.properties[3].isMortgaged).toBe(false);
+
+    // Passing GO resets the quota.
+    engine.state.players[0].position = 35;
+    engine.rollDice(2, 3); // 35 + 5 = 40 % 40 = 0
+    expect(engine.state.players[0].lapsCompleted).toBe(1);
+
+    engine.mortgage(3, true);
+    expect(engine.state.properties[3].isMortgaged).toBe(true);
+  });
+
+  it('does not count debt-forced mortgages against the voluntary quota', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
+    const p1 = engine.state.players[0];
+    engine.state.properties[1].ownerId = 'p1';
+    engine.state.properties[3].ownerId = 'p1';
+    engine.state.debt = { amount: 500, creditorId: null, reason: 'test debt' };
+    engine.state.phase = 'DEBT';
+    p1.money = 10;
+
+    engine.mortgage(1, true); // forced: raising cash for own debt
+    expect(engine.state.properties[1].isMortgaged).toBe(true);
+    expect(p1.mortgagesThisRound).toBe(0);
+
+    // A further, voluntary mortgage this same round should still work.
+    engine.state.debt = null;
+    engine.state.phase = 'TURN_ENDED';
+    engine.mortgage(3, true);
+    expect(engine.state.properties[3].isMortgaged).toBe(true);
+  });
+
+  it('forecloses a mortgage the owner has not lifted after 3 of their own rounds', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
+    const p1 = engine.state.players[0];
+    engine.state.properties[1].ownerId = 'p1';
+    engine.state.properties[1].isMortgaged = true;
+    engine.state.properties[1].mortgagedAtLap = 0;
+
+    // Two passes of GO (p1's own turns; force it back to p1's turn each time
+    // so this only tests p1's own lap count): not stale yet.
+    for (let i = 0; i < 2; i++) {
+      engine.state.currentPlayerIndex = 0;
+      engine.state.phase = 'ROLLING';
+      engine.state.players[0].position = 35;
+      engine.rollDice(2, 3);
+    }
+    expect(engine.state.properties[1].ownerId).toBe('p1');
+    expect(engine.state.phase).not.toBe('AUCTION');
+
+    // Third pass: now stale, the Bank forecloses and opens an auction.
+    engine.state.currentPlayerIndex = 0;
+    engine.state.phase = 'ROLLING';
+    engine.state.players[0].position = 35;
+    engine.rollDice(2, 3);
+    expect(engine.state.properties[1].ownerId).toBeNull();
+    expect(engine.state.properties[1].isMortgaged).toBe(false);
+    expect(engine.state.phase).toBe('AUCTION');
+    expect(engine.state.auction?.tileIndex).toBe(1);
+  });
+
+  it('random board-wide events stay off unless explicitly enabled', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true });
+    engine.state.phase = 'TURN_ENDED';
+    const spy = vi.spyOn(Math, 'random').mockReturnValue(0); // would always fire if enabled
+    engine.endTurn();
+    spy.mockRestore();
+    expect(engine.state.phase).not.toBe('AUCTION');
+    expect(engine.state.activeEvent).toBeNull();
+  });
+
+  it('a random event can auction off an unowned property when enabled', () => {
+    const engine = new MonopolyGameEngine('room123', seats, { specialVictory: true, randomEvents: true });
+    engine.state.phase = 'TURN_ENDED';
+    const spy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    engine.endTurn();
+    spy.mockRestore();
+    expect(engine.state.phase).toBe('AUCTION');
+    expect(engine.state.auction?.tileIndex).toBe(1);
+    expect(engine.state.auction?.highBid).toBe(60); // opens at the deed price
   });
 
   it('sells one building level for half the build cost and auto-pays debt when covered', () => {
@@ -424,24 +584,26 @@ describe('Monopoly Game Engine (LINE Get Rich rules)', () => {
     expect(engine.state.players[0].money).toBe(100);
   });
 
-  it('auction: highest bidder pays the Bank and takes the deed; bids are validated', () => {
+  it('auction: bidding opens at the deed price; highest bidder pays the Bank and takes the deed', () => {
     const engine = new MonopolyGameEngine('room123', seats, { specialVictory: false });
     engine.rollDice(1, 2);
     engine.respondToBuyOffer(false);
 
-    expect(() => engine.placeBid('p2', 5)).toThrow(/at least \$10/);
-    engine.placeBid('p2', 20);
-    expect(() => engine.placeBid('p1', 25)).toThrow(/at least \$30/);
-    engine.placeBid('p1', 30);
-    engine.placeBid('p2', 45);
+    // Tile 3 (Penang) lists for $60: the auction can never sell it cheaper.
+    expect(engine.state.auction?.highBid).toBe(60);
+    expect(() => engine.placeBid('p2', 5)).toThrow(/at least \$70/);
+    engine.placeBid('p2', 70);
+    expect(() => engine.placeBid('p1', 75)).toThrow(/at least \$80/);
+    engine.placeBid('p1', 80);
+    engine.placeBid('p2', 95);
     expect(() => engine.placeBid('p1', 99999)).toThrow(/only have/);
     engine.finishAuction();
 
     expect(engine.state.properties[3].ownerId).toBe('p2');
-    expect(engine.state.players[1].money).toBe(1455);
+    expect(engine.state.players[1].money).toBe(1405);
     expect(engine.state.phase).toBe('TURN_ENDED');
     const txn = engine.state.bank.ledger.at(-1)!;
-    expect(txn).toMatchObject({ fromId: 'p2', toId: null, amount: 45 });
+    expect(txn).toMatchObject({ fromId: 'p2', toId: null, amount: 95 });
   });
 
   it('the Bank has a limited supply of houses and hotels', () => {

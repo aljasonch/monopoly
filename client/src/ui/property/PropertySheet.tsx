@@ -338,8 +338,9 @@ const Manage: React.FC<{
   };
   const isMyTurn = game.players[game.currentPlayerIndex]?.playerId === me.playerId;
   const canAct = isMyTurn && !isWalking && (game.phase === 'ROLLING' || game.phase === 'TURN_ENDED');
-  const upgrade = canAct ? upgradeOptionFor(game, me) : null;
-  const upgradeHere = upgrade && upgrade.prop.tileIndex === prop.tileIndex ? upgrade : null;
+  // Building here is legal on this tile's own turn-window, or on any owned
+  // property while standing exactly on GO (checked by upgradeOptionFor).
+  const upgradeHere = canAct ? upgradeOptionFor(game, me, prop.tileIndex) : null;
   const mortgageBlock = mortgageBlockReason(game, me.playerId, prop.tileIndex);
   const lift = unmortgageCost(prop.tileIndex);
   const sellAll = sellToBankValue(prop);
@@ -395,7 +396,7 @@ const Manage: React.FC<{
           </button>
         ) : (
           <button
-            className="btn btn-secondary btn-sm"
+            className="btn btn-gold btn-sm"
             disabled={!!mortgageBlock}
             title={mortgageBlock ?? undefined}
             onClick={() => emit(() => socket.emit('game:mortgage', { tileIndex: prop.tileIndex, mortgage: true }))}

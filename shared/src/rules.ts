@@ -1,10 +1,22 @@
-import { BOARD_TILES, COLOR_GROUPS } from './board.js';
+import { BOARD_TILES, COLOR_GROUPS, GO_TILE_INDEX } from './board.js';
 import { GameState, PlayerState, PropertyState } from './types.js';
 
 // Shared rule checks so the server enforces and the client explains the same
 // thing. Each returns null when allowed, otherwise a human-readable reason.
 
 export const LEVEL_LABELS = ['Land', 'House', 'Building', 'Hotel', 'Landmark'] as const;
+
+/** Rent multiplier from a board-wide random event (1 = no effect). */
+export function rentMultiplier(state: GameState): number {
+  return state.activeEvent?.type === 'market_crash' ? state.activeEvent.factor : 1;
+}
+
+/** Build/upgrade cost after a board-wide random event discount, if any. */
+export function effectiveBuildCost(state: GameState, tileIndex: number): number {
+  const base = BOARD_TILES[tileIndex].buildCost;
+  const factor = state.activeEvent?.type === 'building_boom' ? state.activeEvent.factor : 1;
+  return Math.round(base * factor);
+}
 
 /** Why `player` cannot upgrade `tileIndex` right now (null = allowed). */
 export function buildBlockReason(state: GameState, player: PlayerState, tileIndex: number): string | null {
@@ -13,8 +25,10 @@ export function buildBlockReason(state: GameState, player: PlayerState, tileInde
   if (!tile || !prop) return 'Invalid property';
   if (prop.ownerId !== player.playerId) return 'You do not own this property';
   if (tile.buildCost <= 0) return 'Railroads and utilities cannot be built on';
-  if (player.position !== tileIndex) {
-    return `You must stand on ${tile.name} to upgrade it. Build right after landing on your own property.`;
+  // Landing exactly on GO is a building spree: upgrade anything you own,
+  // not just the tile you're standing on.
+  if (player.position !== tileIndex && player.position !== GO_TILE_INDEX) {
+    return `You must stand on ${tile.name} to upgrade it. Build right after landing on your own property, or land on GO to build anywhere.`;
   }
   if (prop.isMortgaged) return 'Cannot build on a mortgaged property';
   const mortgagedInSet = (COLOR_GROUPS[tile.group] ?? []).find((i) => state.properties[i]?.isMortgaged);
@@ -40,8 +54,9 @@ export function buildBlockReason(state: GameState, player: PlayerState, tileInde
   }
   const supply = supplyBlockReason(state, prop.buildLevel);
   if (supply) return supply;
-  if (player.money < tile.buildCost) {
-    return `Upgrade costs $${tile.buildCost}, you have $${player.money}`;
+  const cost = effectiveBuildCost(state, tileIndex);
+  if (player.money < cost) {
+    return `Upgrade costs $${cost}, you have $${player.money}`;
   }
   return null;
 }

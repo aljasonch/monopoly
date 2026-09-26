@@ -119,6 +119,18 @@ export function registerLobbyHandlers(
     if (roomManager.setTurnTimer(info.roomId, info.playerId, Number(seconds))) broadcast(info.roomId);
   });
 
+  socket.on('room:setForceBuyMode', ({ mode }) => {
+    const info = roomManager.getPlayerBySocket(socket.id);
+    if (!info) return;
+    if (roomManager.setForceBuyMode(info.roomId, info.playerId, mode)) broadcast(info.roomId);
+  });
+
+  socket.on('room:setRandomEvents', ({ enabled }) => {
+    const info = roomManager.getPlayerBySocket(socket.id);
+    if (!info) return;
+    if (roomManager.setRandomEvents(info.roomId, info.playerId, enabled)) broadcast(info.roomId);
+  });
+
   socket.on('room:kick', ({ playerId }) => {
     const info = roomManager.getPlayerBySocket(socket.id);
     if (!info) return;

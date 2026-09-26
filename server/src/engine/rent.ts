@@ -4,7 +4,8 @@ import {
   GameState,
   PlayerState,
   PropertyState,
-  liquidationValue
+  liquidationValue,
+  rentMultiplier
 } from '@monopoly/shared';
 import { record, returnPieces } from './bank.js';
 
@@ -27,39 +28,40 @@ export function calculateRent(
     return 0;
   }
 
+  let rent: number;
+
   // Railroad
   if (tile.type === 'railroad') {
     const railroads = [5, 15, 25, 35];
     const ownedRailroads = railroads.filter(
       (idx) => gameState.properties[idx]?.ownerId === prop.ownerId && !gameState.properties[idx]?.isMortgaged
     ).length;
-    return 25 * Math.pow(2, Math.max(0, ownedRailroads - 1));
-  }
-
-  // Utility
-  if (tile.type === 'utility') {
+    rent = 25 * Math.pow(2, Math.max(0, ownedRailroads - 1));
+  } else if (tile.type === 'utility') {
+    // Utility
     const utilities = [12, 28];
     const ownedUtilities = utilities.filter(
       (idx) => gameState.properties[idx]?.ownerId === prop.ownerId && !gameState.properties[idx]?.isMortgaged
     ).length;
     const multiplier = ownedUtilities === 2 ? 10 : 4;
-    return diceTotal * multiplier;
-  }
+    rent = diceTotal * multiplier;
+  } else {
+    // Regular Property
+    const level = prop.buildLevel;
+    rent = tile.rentByLevel[level] ?? tile.rentByLevel[0];
 
-  // Regular Property
-  const level = prop.buildLevel;
-  let rent = tile.rentByLevel[level] ?? tile.rentByLevel[0];
-
-  // If level 0 and player owns entire color set, rent is doubled!
-  if (level === 0 && tile.group && COLOR_GROUPS[tile.group]) {
-    const groupIndices = COLOR_GROUPS[tile.group];
-    const ownsAll = groupIndices.every((idx) => gameState.properties[idx]?.ownerId === prop.ownerId);
-    if (ownsAll) {
-      rent *= 2;
+    // If level 0 and player owns entire color set, rent is doubled!
+    if (level === 0 && tile.group && COLOR_GROUPS[tile.group]) {
+      const groupIndices = COLOR_GROUPS[tile.group];
+      const ownsAll = groupIndices.every((idx) => gameState.properties[idx]?.ownerId === prop.ownerId);
+      if (ownsAll) {
+        rent *= 2;
+      }
     }
   }
 
-  return rent;
+  // A Market Crash event temporarily halves rent board-wide.
+  return Math.round(rent * rentMultiplier(gameState));
 }
 
 /**
@@ -130,6 +132,7 @@ export function applyBankruptcy(
       p.ownerId = null;
       p.buildLevel = 0;
       p.isMortgaged = false;
+      p.mortgagedAtLap = undefined;
       p.forceBought = false;
     }
   });

@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import { customAlphabet } from 'nanoid';
 import {
   BOARD_TILES,
+  PROTOCOL_VERSION,
+  ForceBuyMode,
   LeaderboardEntry,
   PlayerColor,
   RoomSettings,
@@ -18,6 +20,7 @@ const roomCode = customAlphabet('ABCDEFGHJKMNPQRSTUVWXYZ23456789', 6);
 const AVAILABLE_COLORS: PlayerColor[] = ['red', 'blue', 'green', 'yellow', 'purple', 'orange'];
 const AVAILABLE_TOKENS: TokenType[] = ['car', 'hat', 'dog', 'ship', 'thimble', 'boot'];
 export const TURN_TIMER_CHOICES = [0, 60, 90, 120] as const;
+const FORCE_BUY_MODES: ForceBuyMode[] = ['off', 'developed', 'any'];
 
 // Idle rooms are cleaned up (nobody connected for this long).
 const IDLE_LOBBY_MS = 30 * 60_000;
@@ -162,7 +165,9 @@ export class RoomManager {
       settings: {
         maxPlayers: 6,
         specialVictory: true,
-        turnTimeoutSec: 90
+        turnTimeoutSec: 90,
+        forceBuyMode: 'developed',
+        randomEvents: true
       },
       seats: [hostSeat],
       engine: null,
@@ -329,6 +334,23 @@ export class RoomManager {
     return true;
   }
 
+  public setForceBuyMode(roomId: string, playerId: string, mode: ForceBuyMode): boolean {
+    const room = this.rooms.get(roomId);
+    if (!room || room.status !== 'waiting' || room.hostPlayerId !== playerId) return false;
+    if (!FORCE_BUY_MODES.includes(mode)) return false;
+    room.settings.forceBuyMode = mode;
+    this.persist(roomId);
+    return true;
+  }
+
+  public setRandomEvents(roomId: string, playerId: string, enabled: boolean): boolean {
+    const room = this.rooms.get(roomId);
+    if (!room || room.status !== 'waiting' || room.hostPlayerId !== playerId) return false;
+    room.settings.randomEvents = enabled;
+    this.persist(roomId);
+    return true;
+  }
+
   /** Host removes someone from the lobby (before the game starts). */
   public kick(roomId: string, hostId: string, targetId: string): { ok: boolean; sockets?: string[]; error?: string } {
     const room = this.rooms.get(roomId);
@@ -362,7 +384,9 @@ export class RoomManager {
     room.status = 'playing';
     room.engine = new MonopolyGameEngine(room.roomId, room.seats, {
       specialVictory: room.settings.specialVictory,
-      turnTimerSec: room.settings.turnTimeoutSec
+      turnTimerSec: room.settings.turnTimeoutSec,
+      randomEvents: room.settings.randomEvents,
+      forceBuyMode: room.settings.forceBuyMode
     });
     for (const seat of room.seats) {
       const p = room.engine.state.players.find((pl) => pl.playerId === seat.playerId);
@@ -525,10 +549,16 @@ export class RoomManager {
       roomId: room.roomId,
       hostPlayerId: room.hostPlayerId,
       status: room.status,
-      settings: room.settings,
+      // Always complete, whatever older code created or saved the room.
+      settings: {
+        ...room.settings,
+        forceBuyMode: room.settings.forceBuyMode ?? 'developed',
+        randomEvents: room.settings.randomEvents ?? true
+      },
       seats: room.seats,
       winnerId: room.engine?.state.winnerId ?? null,
-      victoryType: room.engine?.state.victoryType ?? null
+      victoryType: room.engine?.state.victoryType ?? null,
+      protocol: PROTOCOL_VERSION
     };
   }
 
@@ -617,12 +647,24 @@ export class RoomManager {
     const restored: RoomSession[] = [];
     for (const s of stored) {
       try {
+        // Rooms saved before force-buy modes / random events shipped won't
+        // have these fields on disk: fall back to the old always-on rules.
+        const settings: RoomSettings = {
+          ...s.settings,
+          forceBuyMode: s.settings.forceBuyMode ?? 'developed',
+          randomEvents: s.settings.randomEvents ?? true
+        };
         const room: RoomSession = {
           roomId: s.roomId,
           hostPlayerId: s.hostPlayerId,
-          settings: s.settings,
+          settings,
           seats: s.seats.map((seat) => ({ ...seat, isConnected: false })),
-          engine: s.engine ? MonopolyGameEngine.restore(s.engine) : null,
+          engine: s.engine
+            ? MonopolyGameEngine.restore(s.engine, {
+                randomEvents: settings.randomEvents,
+                forceBuyMode: settings.forceBuyMode
+              })
+            : null,
           status: s.status,
           createdAt: s.createdAt,
           tokens: s.tokens ?? {},

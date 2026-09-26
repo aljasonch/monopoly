@@ -1,0 +1,18 @@
+[Unit]
+Description=TMpoly Monopoly game server
+After=network.target
+
+[Service]
+Type=simple
+User=darrien
+WorkingDirectory=/home/darrien/projects/monopoly
+# Rebuild on every (re)start so a `git pull` + restart never leaves the
+# server running old code next to a new client.
+ExecStartPre=/usr/bin/npm run build
+ExecStart=/usr/bin/npm start
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

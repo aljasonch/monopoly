@@ -2,6 +2,7 @@ import {
   BOARD_TILES,
   CardDef,
   CardDraw,
+  ForceBuyMode,
   GO_TO_JAIL_TILE_INDEX,
   JAIL_TILE_INDEX,
   GO_SALARY,
@@ -35,7 +36,8 @@ export function resolveLanding(
   chestDeck: CardDef[],
   onCard?: (draw: CardDraw) => void,
   depth = 0,
-  opts: LandingOptions = {}
+  opts: LandingOptions = {},
+  forceBuyMode: ForceBuyMode = 'developed'
 ): ResolveResult {
   const tileIndex = player.position;
   const tile = BOARD_TILES[tileIndex];
@@ -69,7 +71,7 @@ export function resolveLanding(
 
   // 3. Chance / Chest
   if (tile.type === 'chance' || tile.type === 'chest') {
-    return drawCard(gameState, player, tile.type, chanceDeck, chestDeck, onCard, depth);
+    return drawCard(gameState, player, tile.type, chanceDeck, chestDeck, onCard, depth, forceBuyMode);
   }
 
   // 4. Purchasable tiles: Property / Railroad / Utility
@@ -88,9 +90,9 @@ export function resolveLanding(
         return { needsForceBuyChoice: false, toast: msg };
       } else {
         gameState.buyOffer = null;
-        const msg = `${player.name} cannot afford ${tile.name} ($${tile.price}). The Bank puts it up for auction.`;
+        const msg = `${player.name} landed on ${tile.name} but can't afford the $${tile.price} asking price.`;
         gameState.lastActionText = msg;
-        return { needsForceBuyChoice: false, toast: msg, auctionTile: tileIndex };
+        return { needsForceBuyChoice: false, toast: msg };
       }
     }
 
@@ -105,17 +107,9 @@ export function resolveLanding(
     const opponent = gameState.players.find((p) => p.playerId === prop.ownerId);
     if (!opponent) return { needsForceBuyChoice: false, toast: '' };
 
-    // Check force-buy eligibility
-    const fbCheck = canForceBuy(tileIndex, player, prop);
-    if (fbCheck.eligible) {
-      gameState.phase = 'FORCE_BUY_OFFER';
-      gameState.forceBuyOffer = createForceBuyOffer(tileIndex, player, prop);
-      const msg = `${player.name} landed on ${opponent.name}'s ${tile.name}. Force-buy offer: $${fbCheck.price}.`;
-      gameState.lastActionText = msg;
-      return { needsForceBuyChoice: true, toast: msg };
-    }
-
-    // Not eligible for force-buy: pay rent
+    // Rent is always due first. Force-buying (when eligible) is an option on
+    // top of that, not instead of it: taking over the deed costs rent + the
+    // takeover price, not just the takeover price.
     const diceTotal = gameState.dice[0] + gameState.dice[1];
     let rent = calculateRent(gameState, tileIndex, diceTotal);
     if (tile.type === 'utility' && opts.utilityRoll !== undefined && !prop.isMortgaged) {
@@ -136,9 +130,21 @@ export function resolveLanding(
       return { needsForceBuyChoice: false, toast: debtMsg };
     }
 
-    const msg = `${player.name} paid $${result.paid} rent to ${opponent.name} for ${tile.name}.`;
-    gameState.lastActionText = msg;
-    return { needsForceBuyChoice: false, toast: msg };
+    const rentMsg = `${player.name} paid $${result.paid} rent to ${opponent.name} for ${tile.name}.`;
+
+    // Check force-buy eligibility against what's left after rent -- the
+    // takeover price is due on top of it, not instead of it.
+    const fbCheck = canForceBuy(tileIndex, player, prop, forceBuyMode);
+    if (fbCheck.eligible) {
+      gameState.phase = 'FORCE_BUY_OFFER';
+      gameState.forceBuyOffer = createForceBuyOffer(tileIndex, player, prop);
+      const msg = `${rentMsg} Force-buy offer: $${fbCheck.price} on top of the rent.`;
+      gameState.lastActionText = msg;
+      return { needsForceBuyChoice: true, toast: msg };
+    }
+
+    gameState.lastActionText = rentMsg;
+    return { needsForceBuyChoice: false, toast: rentMsg };
   }
 
   return { needsForceBuyChoice: false, toast: `Landed on ${tile.name}` };
@@ -156,6 +162,7 @@ function nextOf(list: number[], from: number): number {
 function payGoSalary(gameState: GameState, player: PlayerState): void {
   player.money += GO_SALARY;
   player.lapsCompleted++;
+  player.mortgagesThisRound = 0;
   record(gameState, null, player.playerId, GO_SALARY, 'GO salary');
 }
 
@@ -196,7 +203,8 @@ export function drawCard(
   chanceDeck: CardDef[],
   chestDeck: CardDef[],
   onCard?: (draw: CardDraw) => void,
-  depth = 0
+  depth = 0,
+  forceBuyMode: ForceBuyMode = 'developed'
 ): ResolveResult {
   const deck = deckType === 'chance' ? chanceDeck : chestDeck;
   const deckName = deckType === 'chance' ? 'Chance' : 'Community Chest';
@@ -222,7 +230,7 @@ export function drawCard(
     if (collectGo && target <= player.position) payGoSalary(gameState, player);
     player.position = target;
     if (target === 0 || depth >= 2) return finish();
-    const landed = resolveLanding(gameState, player, chanceDeck, chestDeck, onCard, depth + 1, opts);
+    const landed = resolveLanding(gameState, player, chanceDeck, chestDeck, onCard, depth + 1, opts, forceBuyMode);
     const combined = landed.toast ? `${toast} ${landed.toast}` : toast;
     gameState.lastActionText = combined;
     return { needsForceBuyChoice: landed.needsForceBuyChoice, toast: combined, auctionTile: landed.auctionTile };

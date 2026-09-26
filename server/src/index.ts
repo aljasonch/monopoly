@@ -7,6 +7,7 @@ import cors from 'cors';
 import compression from 'compression';
 import { Server } from 'socket.io';
 import {
+  PROTOCOL_VERSION,
   ClientToServerEvents,
   ServerToClientEvents
 } from '@monopoly/shared';
@@ -27,6 +28,14 @@ const PORT = parseInt(process.env.PORT || '5000', 10);
 
 const app = express();
 app.use(cors());
+// Allow Firebase's Google sign-in popup to be tracked by this window; without
+// this, Chrome's default cross-origin isolation blocks the popup-closed
+// check Firebase relies on (logs as "window.closed"/"window.close" COOP
+// warnings and can leave the sign-in stuck).
+app.use((_req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  next();
+});
 // gzip everything (JS, CSS, glTF, SVG): big win over a Cloudflare tunnel / 4G.
 app.use(compression());
 app.use(express.json());
@@ -47,7 +56,7 @@ app.use(
 );
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, timestamp: Date.now() });
+  res.json({ ok: true, timestamp: Date.now(), protocol: PROTOCOL_VERSION });
 });
 
 app.get('*', (req, res) => {

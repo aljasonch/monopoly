@@ -28,6 +28,9 @@ export function wireEngine(io: IO, roomManager: RoomManager, roomId: string): vo
   room.engine.options.onToast = (toast) => {
     io.to(roomId).emit('game:toast', toast);
   };
+  room.engine.options.onRandomEvent = (toast) => {
+    io.to(roomId).emit('game:randomEvent', toast);
+  };
   room.engine.options.onCard = (draw) => {
     io.to(roomId).emit('game:card', draw);
   };

@@ -55,6 +55,9 @@ interface GameStore {
   infoTile: number | null;
   // Latest "passed GO" celebration (3D coin burst + banner).
   goCelebration: { id: number; playerId: string } | null;
+  // Latest random board event (Market Crash, Bank Bonus, ...): a big
+  // centered banner, held on screen long enough to actually read.
+  eventBanner: { id: number; text: string; type: ToastMessage['type'] } | null;
   // Auction the player closed with "Not interested" (see auctionKey).
   dismissedAuction: string | null;
   chatMessages: ChatMessage[];
@@ -90,6 +93,7 @@ interface GameStore {
   setPanelCollapsed: (collapsed: boolean) => void;
   setDismissedAuction: (key: string | null) => void;
   celebrateGo: (playerId: string) => void;
+  celebrateEvent: (text: string, type?: ToastMessage['type']) => void;
   setDebtMinimized: (v: boolean) => void;
   setFocusTile: (tile: number | null) => void;
   setInfoTile: (tile: number | null) => void;
@@ -134,6 +138,7 @@ export const useGameStore = create<GameStore>((set) => ({
   panelCollapsed: readPref('ui.panelCollapsed') === '1',
   dismissedAuction: null,
   goCelebration: null,
+  eventBanner: null,
   debtMinimized: false,
   focusTile: null,
   infoTile: null,
@@ -211,6 +216,11 @@ export const useGameStore = create<GameStore>((set) => ({
       return { goCelebration, moneyHold, gameState: present(s.rawGame, moneyHold) };
     });
   },
+  celebrateEvent: (text, type = 'info') => {
+    if (type === 'success') audioManager.playCoin();
+    else audioManager.playModal();
+    set((s) => ({ eventBanner: { id: (s.eventBanner?.id ?? 0) + 1, text, type } }));
+  },
   snoozeTrade: (id) => set((s) => ({ snoozedTrades: [...s.snoozedTrades, id] })),
   addChatMessage: (msg, fromOther = false) =>
     set((s) => ({
@@ -253,6 +263,7 @@ export const useGameStore = create<GameStore>((set) => ({
       snoozedTrades: [],
       ticker: null,
       goCelebration: null,
+      eventBanner: null,
       focusTile: null,
       infoTile: null,
       isWalking: false,
@@ -456,6 +467,15 @@ export function initSocketListeners() {
 
   socket.on('game:toast', ({ text, type }) => {
     enqueueEvent(() => showGameToast(text, type));
+  });
+
+  // Random board events get their own big centered banner instead of a
+  // corner toast, still logged to the activity tab like anything else.
+  socket.on('game:randomEvent', ({ text, type }) => {
+    enqueueEvent(() => {
+      useGameStore.getState().pushActivity(text, type ?? 'info');
+      useGameStore.getState().celebrateEvent(text, type);
+    });
   });
 }
 

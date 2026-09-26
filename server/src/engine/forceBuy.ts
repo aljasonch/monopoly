@@ -1,6 +1,7 @@
 import {
   BOARD_TILES,
   FORCE_BUY_TIMER_MS,
+  ForceBuyMode,
   GameState,
   PlayerState,
   PropertyState,
@@ -29,10 +30,22 @@ export function calculateForceBuyPrice(tileIndex: number, buildLevel: number): n
 export function canForceBuy(
   tileIndex: number,
   buyer: PlayerState,
-  property: PropertyState | undefined
+  property: PropertyState | undefined,
+  mode: ForceBuyMode = 'developed'
 ): { eligible: boolean; price: number; reason?: string } {
+  if (mode === 'off') {
+    return { eligible: false, price: 0, reason: 'Force-buy is turned off in this game' };
+  }
+
   if (!property || !property.ownerId) {
     return { eligible: false, price: 0, reason: 'Tile is unowned' };
+  }
+
+  // Only color-set properties can be force-bought. Railroads/airports and
+  // utilities are never eligible, in any mode.
+  const tile = BOARD_TILES[tileIndex];
+  if (!tile || tile.type !== 'property') {
+    return { eligible: false, price: 0, reason: 'Only properties can be force-bought' };
   }
 
   if (property.ownerId === buyer.playerId) {
@@ -43,8 +56,9 @@ export function canForceBuy(
     return { eligible: false, price: 0, reason: 'Property is mortgaged' };
   }
 
-  // LINE Get Rich rule: only developed properties can be force-bought
-  if (property.buildLevel < 1) {
+  // Classic LINE Get Rich rule: only developed properties can be
+  // force-bought. The "any" house rule also allows raw, unbuilt land.
+  if (mode === 'developed' && property.buildLevel < 1) {
     return { eligible: false, price: 0, reason: 'Tile has no buildings (empty land cannot be force-bought)' };
   }
 

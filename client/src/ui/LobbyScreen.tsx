@@ -1,11 +1,13 @@
 import React from 'react';
 import { socket, clearSession } from '../net/socket.js';
 import { useGameStore } from '../store/gameStore.js';
-import { TokenType, PlayerColor } from '@monopoly/shared';
-import { Check, ChevronLeft, Copy, Play, Share2, Timer, Trophy, Users, Palette, Shapes } from 'lucide-react';
+import { TokenType, PlayerColor, ForceBuyMode, PROTOCOL_VERSION } from '@monopoly/shared';
+import { Check, ChevronLeft, Copy, Play, Share2, Shuffle, Swords, Timer, Trophy, Users, Palette, Shapes } from 'lucide-react';
 import { LeaderboardButton } from './session/Leaderboard.js';
 import { TOKENS, COLORS } from './lobbyConstants.js';
 import { LobbySeats } from './LobbySeats.js';
+import { MobileLobby } from './lobby/MobileLobby.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 import { Logo, Sky } from './common/Sky.js';
 
 export const LobbyScreen: React.FC = () => {
@@ -14,7 +16,16 @@ export const LobbyScreen: React.FC = () => {
   const resetAll = useGameStore((s) => s.resetAll);
   const addToast = useGameStore((s) => s.addToast);
 
+  const isMobile = useIsMobile();
+
   if (!roomState) return null;
+  // Rooms from an older server (or saved before these settings existed) may
+  // not carry them: show the defaults instead of an empty selector.
+  const settings = {
+    ...roomState.settings,
+    forceBuyMode: roomState.settings.forceBuyMode ?? ('developed' as ForceBuyMode),
+    randomEvents: roomState.settings.randomEvents ?? true
+  };
   const mySeat = roomState.seats.find((s) => s.playerId === myPlayerId);
   const isHost = mySeat?.isHost ?? false;
   const others = roomState.seats.filter((s) => s.playerId !== myPlayerId);
@@ -76,6 +87,16 @@ export const LobbyScreen: React.FC = () => {
     socket.emit('room:setTurnTimer', { seconds });
   };
 
+  const handleForceBuyMode = (mode: ForceBuyMode) => {
+    if (!isHost) return;
+    socket.emit('room:setForceBuyMode', { mode });
+  };
+
+  const handleToggleRandomEvents = () => {
+    if (!isHost) return;
+    socket.emit('room:setRandomEvents', { enabled: !settings.randomEvents });
+  };
+
   const handleKick = (playerId: string) => {
     socket.emit('room:kick', { playerId });
   };
@@ -86,9 +107,41 @@ export const LobbyScreen: React.FC = () => {
     resetAll();
   };
 
+  const outdated = (roomState.protocol ?? 0) < PROTOCOL_VERSION ? <ServerOutdated /> : null;
+
+  if (isMobile) {
+    return (
+      <>
+      {outdated}
+      <MobileLobby
+        room={{ ...roomState, settings }}
+        me={mySeat}
+        isHost={isHost}
+        canStart={canStart}
+        startHint={startHint}
+        actions={{
+          copyCode: handleCopyCode,
+          share: canShare ? handleShare : null,
+          selectToken: handleSelectToken,
+          selectColor: handleSelectColor,
+          toggleReady: handleToggleReady,
+          start: handleStartGame,
+          leave: handleLeave,
+          kick: handleKick,
+          toggleSpecialVictory: handleToggleSpecialVictory,
+          setTurnTimer: handleTurnTimer,
+          setForceBuyMode: handleForceBuyMode,
+          toggleRandomEvents: handleToggleRandomEvents
+        }}
+      />
+      </>
+    );
+  }
+
   return (
     <div className="menu-screen lobby-screen">
       <Sky />
+      {outdated}
 
       <header className="lobby-appbar">
         <button className="btn btn-ghost btn-sm btn-leave" onClick={handleLeave}>
@@ -238,6 +291,55 @@ export const LobbyScreen: React.FC = () => {
                 </button>
               ))}
             </div>
+
+            <div className="setting-row">
+              <span className="setting-icon">
+                <Swords size={18} />
+              </span>
+              <div className="setting-copy">
+                <strong>Force-buy</strong>
+                <span>Land on a rival's deed and buy it from them at double price.</span>
+              </div>
+            </div>
+            <div className="segmented small" role="radiogroup" aria-label="Force-buy mode">
+              {(
+                [
+                  ['off', 'Off'],
+                  ['developed', 'Built only'],
+                  ['any', 'Any deed']
+                ] as [ForceBuyMode, string][]
+              ).map(([mode, label]) => (
+                <button
+                  key={mode}
+                  role="radio"
+                  aria-checked={settings.forceBuyMode === mode}
+                  className={settings.forceBuyMode === mode ? 'active' : ''}
+                  onClick={() => handleForceBuyMode(mode)}
+                  disabled={!isHost}
+                  title={isHost ? undefined : 'Only the host can change this'}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="setting-row">
+              <span className="setting-icon">
+                <Shuffle size={18} />
+              </span>
+              <div className="setting-copy">
+                <strong>Random events</strong>
+                <span>Occasional board-wide surprises: bank bonuses, market crashes, surprise auctions.</span>
+              </div>
+              <button
+                className={`switch ${settings.randomEvents ? 'on' : ''}`}
+                onClick={handleToggleRandomEvents}
+                disabled={!isHost}
+                role="switch"
+                aria-checked={settings.randomEvents}
+                title={isHost ? 'Toggle random events' : 'Only the host can change this'}
+              />
+            </div>
           </section>
 
 
@@ -263,3 +365,12 @@ export const LobbyScreen: React.FC = () => {
     </div>
   );
 };
+
+// The server runs older code than this page: new lobby settings would be
+// ignored, so say so plainly (the fix is rebuilding + restarting it).
+const ServerOutdated: React.FC = () => (
+  <div className="server-outdated" role="alert">
+    <b>The game server needs an update.</b> Some settings (force-buy, random events) will not work until the host
+    rebuilds and restarts it (<code>npm run build</code>, then restart).
+  </div>
+);

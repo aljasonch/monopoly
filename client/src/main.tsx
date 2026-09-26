@@ -8,6 +8,7 @@ import '@fontsource/nunito/900.css';
 import './index.css';
 import './styles/components.css';
 import './styles/home.css';
+import './styles/mhome.css';
 import './styles/lobby.css';
 import './styles/game.css';
 import './styles/game-desktop.css';

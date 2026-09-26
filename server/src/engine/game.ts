@@ -9,9 +9,12 @@ import {
   AUCTION_EXTEND_MS,
   AUCTION_MIN_INCREMENT,
   AUCTION_MS,
+  FORECLOSURE_ROUNDS,
+  MAX_MORTGAGES_PER_ROUND,
   CardDef,
   CardDraw,
   DebtOffer,
+  ForceBuyMode,
   GameState,
   PlayerState,
   PropertyState,
@@ -25,7 +28,7 @@ import {
 } from '@monopoly/shared';
 import { executeForceBuy } from './forceBuy.js';
 import { buildProperty, sellBuilding, sellPropertyToBank, toggleMortgage } from './actions.js';
-import { applyBankruptcy, calculateRent, payRent } from './rent.js';
+import { applyBankruptcy } from './rent.js';
 import { resolveLanding } from './resolve.js';
 import { createBank, record } from './bank.js';
 import { checkVictory } from './victory.js';
@@ -39,13 +42,32 @@ function shuffle<T>(list: T[]): T[] {
   return list;
 }
 
+// Between turns, there's a small chance something happens to the whole
+// board: a rough 1-in-6 roll, and never more than one event at a time.
+const RANDOM_EVENT_CHANCE = 1 / 6;
+const RANDOM_EVENT_DURATION_TURNS = 6;
+type RandomEventKind =
+  | 'property_lottery'
+  | 'market_crash'
+  | 'building_boom'
+  | 'bank_bonus'
+  | 'leaders_tax';
+
 export interface GameEngineOptions {
   specialVictory: boolean;
   // Seconds per decision before the server plays for the current player
   // (0 / undefined = no turn timer).
   turnTimerSec?: number;
+  // Opt in to the occasional board-wide random events (Market Crash, Bank
+  // Bonus, ...). Off by default so unit tests stay deterministic.
+  randomEvents?: boolean;
+  // 'off' | 'developed' (classic, default) | 'any' (raw land too).
+  forceBuyMode?: ForceBuyMode;
   onStateChange?: (state: GameState) => void;
   onToast?: (toast: { text: string; type?: 'info' | 'success' | 'warning' | 'danger' }) => void;
+  // A random event fired: shown as its own big banner client-side, in
+  // addition to the normal toast / activity log line.
+  onRandomEvent?: (toast: { text: string; type?: 'info' | 'success' | 'warning' | 'danger' }) => void;
   onCard?: (draw: CardDraw) => void;
   // Dice the server rolled for a player whose time ran out.
   onDice?: (dice: { d1: number; d2: number; doubles: boolean }) => void;
@@ -79,6 +101,7 @@ export class MonopolyGameEngine {
       isConnected: true,
       consecutiveDoubles: 0,
       lapsCompleted: 0,
+      mortgagesThisRound: 0,
       jailCardDecks: []
     }));
 
@@ -113,6 +136,7 @@ export class MonopolyGameEngine {
       lastMove: null,
       bank: createBank(),
       auction: null,
+      activeEvent: null,
       winnerId: null,
       victoryType: null,
       lastActionText: 'Game started. Roll to begin.'
@@ -194,6 +218,7 @@ export class MonopolyGameEngine {
     if (newPos < oldPos) {
       player.money += GO_SALARY;
       player.lapsCompleted++;
+      player.mortgagesThisRound = 0;
       record(this.state, null, player.playerId, GO_SALARY, 'GO salary');
       this.emitToast(`${player.name} passed GO and collected $${GO_SALARY}.`, 'success');
     }
@@ -207,7 +232,10 @@ export class MonopolyGameEngine {
       player,
       this.chanceDeck,
       this.chestDeck,
-      (draw: CardDraw) => this.options.onCard?.(draw)
+      (draw: CardDraw) => this.options.onCard?.(draw),
+      0,
+      {},
+      this.options.forceBuyMode
     );
     this.recordMove(player, oldPos, newPos, player.position, player.lapsCompleted > lapsBeforeLanding);
     if (res.toast) {
@@ -223,7 +251,7 @@ export class MonopolyGameEngine {
       this.setupForceBuyTimeout();
     } else if (currentPhase === 'BUY_OFFER' && this.state.buyOffer) {
       // Stay in BUY_OFFER phase waiting for player's purchase choice
-    } else {
+    } else if (!this.tryStartForeclosureAuction()) {
       this.state.phase = 'TURN_ENDED';
     }
 
@@ -251,10 +279,11 @@ export class MonopolyGameEngine {
       prop.ownerId = player.playerId;
       prop.buildLevel = 0;
       prop.isMortgaged = false;
+      prop.mortgagedAtLap = undefined;
       prop.forceBought = false;
       this.emitToast(`${player.name} bought ${tile.name} for $${offer.price}.`, 'success');
       this.state.buyOffer = null;
-      this.state.phase = 'TURN_ENDED';
+      if (!this.tryStartForeclosureAuction()) this.state.phase = 'TURN_ENDED';
       this.checkAndApplyVictory();
       this.notify();
       return;
@@ -271,11 +300,40 @@ export class MonopolyGameEngine {
   // Bank auctions
   // ------------------------------------------------------------------
 
+  // A mortgage the owner hasn't lifted after FORECLOSURE_ROUNDS of their own
+  // laps gets seized and put up for auction. Called wherever a turn would
+  // otherwise settle into TURN_ENDED, so a stale mortgage from any player
+  // (mortgaging is allowed any time, not just on your own turn) gets caught
+  // promptly instead of waiting for that owner's next roll. Returns true if
+  // it started one (the caller should not also set phase to TURN_ENDED).
+  private tryStartForeclosureAuction(): boolean {
+    for (const prop of Object.values(this.state.properties)) {
+      if (!prop.isMortgaged || !prop.ownerId || prop.mortgagedAtLap === undefined) continue;
+      const owner = this.state.players.find((p) => p.playerId === prop.ownerId);
+      if (!owner || owner.lapsCompleted - prop.mortgagedAtLap < FORECLOSURE_ROUNDS) continue;
+      const tile = BOARD_TILES[prop.tileIndex];
+      this.emitToast(
+        `${tile.name} was mortgaged for ${FORECLOSURE_ROUNDS} rounds without being paid off. The Bank forecloses on ${owner.name} and auctions it.`,
+        'warning'
+      );
+      prop.ownerId = null;
+      prop.buildLevel = 0;
+      prop.isMortgaged = false;
+      prop.mortgagedAtLap = undefined;
+      prop.forceBought = false;
+      this.startAuction(prop.tileIndex);
+      return true;
+    }
+    return false;
+  }
+
   private startAuction(tileIndex: number): void {
     this.state.phase = 'AUCTION';
     this.state.auction = {
       tileIndex,
-      highBid: 0,
+      // Bidding opens at the deed's listed price: the property can never
+      // sell for less than the Bank would have charged for it outright.
+      highBid: BOARD_TILES[tileIndex].price,
       highBidderId: null,
       endsAt: Date.now() + AUCTION_MS,
       bidders: []
@@ -334,6 +392,7 @@ export class MonopolyGameEngine {
       prop.ownerId = winner.playerId;
       prop.buildLevel = 0;
       prop.isMortgaged = false;
+      prop.mortgagedAtLap = undefined;
       prop.forceBought = false;
       this.emitToast(`SOLD! ${winner.name} wins ${tile.name} at auction for $${auction.highBid}.`, 'success');
     } else {
@@ -341,7 +400,7 @@ export class MonopolyGameEngine {
     }
 
     this.state.auction = null;
-    this.state.phase = 'TURN_ENDED';
+    if (!this.tryStartForeclosureAuction()) this.state.phase = 'TURN_ENDED';
     this.checkAndApplyVictory();
     this.notify();
   }
@@ -357,31 +416,20 @@ export class MonopolyGameEngine {
     const player = this.getCurrentPlayer();
     const opponent = this.state.players.find((p) => p.playerId === offer.targetPlayerId);
 
+    // Rent for landing here was already charged in resolveLanding, before
+    // this offer was even made -- force-buying is on top of that, not
+    // instead of it, so nothing more is owed just for declining or failing.
     if (accept) {
       const res = executeForceBuy(this.state, offer.tileIndex);
-      if (res.success) {
-        this.emitToast(res.text, 'success');
-      } else {
-        this.emitToast(res.text, 'danger');
-        if (opponent) {
-          const rent = calculateRent(this.state, offer.tileIndex, this.state.dice[0] + this.state.dice[1]);
-          this.payRentOrDebt(player, opponent, rent, `rent for ${BOARD_TILES[offer.tileIndex].name}`);
-        }
-      }
+      this.emitToast(res.text, res.success ? 'success' : 'danger');
     } else {
       this.state.forceBuyOffer = null;
       if (opponent) {
-        const rent = calculateRent(this.state, offer.tileIndex, this.state.dice[0] + this.state.dice[1]);
-        const result = payRent(this.state, player, opponent, rent, `Rent for ${BOARD_TILES[offer.tileIndex].name}`);
-        if (result.debt !== undefined) {
-          this.enterDebt(player, result.debt, opponent.playerId, `rent for ${BOARD_TILES[offer.tileIndex].name}`);
-        } else {
-          this.emitToast(`${player.name} declined force-buy. Paid $${result.paid} rent to ${opponent.name}.`, 'info');
-        }
+        this.emitToast(`${player.name} declined the $${offer.price} force-buy on ${BOARD_TILES[offer.tileIndex].name}.`, 'info');
       }
     }
 
-    if (!this.state.debt) {
+    if (!this.state.debt && !this.tryStartForeclosureAuction()) {
       this.state.phase = 'TURN_ENDED';
     }
     this.checkAndApplyVictory();
@@ -686,24 +734,6 @@ export class MonopolyGameEngine {
     this.notify();
   }
 
-  /**
-   * Pays rent when affordable, otherwise parks the shortfall as DEBT
-   * so the debtor can sell buildings / mortgage before paying.
-   */
-  private payRentOrDebt(
-    debtor: PlayerState,
-    creditor: PlayerState,
-    amount: number,
-    reason: string
-  ): void {
-    const result = payRent(this.state, debtor, creditor, amount, reason.charAt(0).toUpperCase() + reason.slice(1));
-    if (result.debt !== undefined) {
-      this.enterDebt(debtor, result.debt, creditor.playerId, reason);
-    } else {
-      this.emitToast(`${debtor.name} paid $${result.paid} rent to ${creditor.name}.`, 'info');
-    }
-  }
-
   private enterDebt(
     debtor: PlayerState,
     amount: number,
@@ -754,7 +784,7 @@ export class MonopolyGameEngine {
       record(this.state, debtor.playerId, null, debt.amount, `Debt: ${debt.reason}`);
     }
     this.state.debt = null;
-    this.state.phase = 'TURN_ENDED';
+    if (!this.tryStartForeclosureAuction()) this.state.phase = 'TURN_ENDED';
     const msg = debt.splits?.length
       ? `${debtor.name} paid off $${debt.amount} (${debt.reason}).`
       : creditor
@@ -766,10 +796,17 @@ export class MonopolyGameEngine {
 
   public mortgage(tileIndex: number, isMortgage: boolean, playerId: string = this.getCurrentPlayer().playerId): void {
     const player = this.manager(playerId);
+    // Raising cash to cover your own active debt isn't a strategic choice --
+    // don't let the per-round quota block it.
+    const payingOwnDebt = this.state.phase === 'DEBT' && !!this.state.debt && this.getCurrentPlayer().playerId === player.playerId;
+    if (isMortgage && !payingOwnDebt && (player.mortgagesThisRound ?? 0) >= MAX_MORTGAGES_PER_ROUND) {
+      throw new Error(`You can only mortgage ${MAX_MORTGAGES_PER_ROUND} property per round. Pass GO to reset it.`);
+    }
     const res = toggleMortgage(this.state, player, tileIndex, isMortgage);
     if (!res.success) {
       throw new Error(res.text);
     }
+    if (isMortgage && !payingOwnDebt) player.mortgagesThisRound = (player.mortgagesThisRound ?? 0) + 1;
     this.emitToast(res.text, 'info');
     this.afterPropertyChange();
   }
@@ -805,11 +842,122 @@ export class MonopolyGameEngine {
     this.state.currentPlayerIndex = nextIdx;
     this.state.turnNumber++;
     this.state.phase = 'ROLLING';
+    this.expireActiveEvent();
 
     const nextPlayer = this.state.players[nextIdx];
     this.emitToast(`It is now ${nextPlayer.name}'s turn.`, 'info');
+    this.maybeTriggerRandomEvent();
     this.checkAndApplyVictory();
     this.notify();
+  }
+
+  // ------------------------------------------------------------------
+  // Random board-wide events
+  // ------------------------------------------------------------------
+
+  private expireActiveEvent(): void {
+    const event = this.state.activeEvent;
+    if (event && this.state.turnNumber > event.expiresAtTurn) {
+      this.state.activeEvent = null;
+    }
+  }
+
+  private maybeTriggerRandomEvent(): void {
+    if (!this.options.randomEvents) return;
+    // Never interrupt a decision already in progress (auction, debt, etc).
+    if (this.state.phase !== 'ROLLING') return;
+    if (Math.random() >= RANDOM_EVENT_CHANCE) return;
+
+    const active = this.state.players.filter((p) => !p.isBankrupt);
+    const unownedTiles = BOARD_TILES.filter(
+      (t) => t.price > 0 && this.state.properties[t.index]?.ownerId === null
+    ).map((t) => t.index);
+
+    const eligible: RandomEventKind[] = [];
+    if (unownedTiles.length > 0) eligible.push('property_lottery');
+    if (!this.state.activeEvent) eligible.push('market_crash', 'building_boom');
+    if (active.length > 0) eligible.push('bank_bonus');
+    if (active.length >= 2) eligible.push('leaders_tax');
+    if (eligible.length === 0) return;
+
+    const kind = eligible[Math.floor(Math.random() * eligible.length)];
+    switch (kind) {
+      case 'property_lottery':
+        this.eventPropertyLottery(unownedTiles);
+        break;
+      case 'market_crash':
+        this.eventMarketCrash();
+        break;
+      case 'building_boom':
+        this.eventBuildingBoom();
+        break;
+      case 'bank_bonus':
+        this.eventBankBonus(active);
+        break;
+      case 'leaders_tax':
+        this.eventLeadersTax(active);
+        break;
+    }
+  }
+
+  // Bank spontaneously auctions off a random unowned property.
+  private eventPropertyLottery(unownedTiles: number[]): void {
+    const tileIndex = unownedTiles[Math.floor(Math.random() * unownedTiles.length)];
+    this.emitRandomEvent(`Random event! The Bank puts ${BOARD_TILES[tileIndex].name} up for auction.`, 'warning');
+    this.startAuction(tileIndex);
+  }
+
+  // Rent is halved everywhere for a few turns.
+  private eventMarketCrash(): void {
+    this.state.activeEvent = {
+      type: 'market_crash',
+      label: 'Market Crash: rent halved',
+      factor: 0.5,
+      expiresAtTurn: this.state.turnNumber + RANDOM_EVENT_DURATION_TURNS
+    };
+    this.emitRandomEvent(
+      `Random event! Market Crash — rent is halved board-wide for the next ${RANDOM_EVENT_DURATION_TURNS} turns.`,
+      'warning'
+    );
+  }
+
+  // Building costs are discounted for a few turns.
+  private eventBuildingBoom(): void {
+    this.state.activeEvent = {
+      type: 'building_boom',
+      label: 'Building Boom: 50% off construction',
+      factor: 0.5,
+      expiresAtTurn: this.state.turnNumber + RANDOM_EVENT_DURATION_TURNS
+    };
+    this.emitRandomEvent(
+      `Random event! Building Boom — house/hotel upgrades are 50% off for the next ${RANDOM_EVENT_DURATION_TURNS} turns.`,
+      'success'
+    );
+  }
+
+  // Everyone still playing gets a small surprise windfall from the Bank.
+  private eventBankBonus(active: PlayerState[]): void {
+    const parts: string[] = [];
+    for (const p of active) {
+      const bonus = 50 + Math.floor(Math.random() * 11) * 10; // $50..$150
+      p.money += bonus;
+      record(this.state, null, p.playerId, bonus, 'Random event: Bank Bonus');
+      parts.push(`${p.name} +$${bonus}`);
+    }
+    this.emitRandomEvent(`Random event! Bank Bonus — ${parts.join(', ')}.`, 'success');
+  }
+
+  // Catch-up mechanic: the richest player pays 10% of their cash straight
+  // to the poorest, so a runaway leader can't coast forever.
+  private eventLeadersTax(active: PlayerState[]): void {
+    const richest = [...active].sort((a, b) => b.money - a.money)[0];
+    const poorest = [...active].filter((p) => p.playerId !== richest.playerId).sort((a, b) => a.money - b.money)[0];
+    if (!richest || !poorest || richest.money <= 0) return;
+    const tax = Math.max(10, Math.round(richest.money * 0.1));
+    richest.money -= tax;
+    poorest.money += tax;
+    record(this.state, richest.playerId, poorest.playerId, tax, 'Random event: Wealth Tax');
+    this.emitRandomEvent(`Random event! Wealth Tax — ${richest.name} pays $${tax} to ${poorest.name}.`, 'warning');
   }
 
   public checkAndApplyVictory(): boolean {
@@ -853,6 +1001,13 @@ export class MonopolyGameEngine {
     this.options.onToast?.({ text, type });
   }
 
+  // Random events still land in the toast / activity log like anything
+  // else, but also get their own big, hard-to-miss banner client-side.
+  private emitRandomEvent(text: string, type: 'info' | 'success' | 'warning' | 'danger' = 'info'): void {
+    this.emitToast(text, type);
+    this.options.onRandomEvent?.({ text, type });
+  }
+
   private notify(): void {
     this.armTurnTimer();
     this.options.onStateChange?.(this.state);
@@ -889,7 +1044,7 @@ export class MonopolyGameEngine {
     }
     if (this.state.auction?.highBidderId === playerId) {
       this.state.auction.highBidderId = null;
-      this.state.auction.highBid = 0;
+      this.state.auction.highBid = BOARD_TILES[this.state.auction.tileIndex].price;
     }
 
     while ((player.jailCardDecks?.length ?? 0) > 0) this.returnJailCard(player);

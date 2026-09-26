@@ -5,11 +5,20 @@ export type RoomStatus = 'waiting' | 'playing' | 'finished';
 
 export type VictoryType = 'bankruptcy' | 'triple_victory' | 'line_victory';
 
+// 'off' = landing on an opponent's built property is always just rent.
+// 'developed' = classic LINE Get Rich rule: only built-up (house+) deeds can
+// be force-bought, raw land cannot. 'any' = any owned deed can be forced,
+// built or not.
+export type ForceBuyMode = 'off' | 'developed' | 'any';
+
 export interface RoomSettings {
   maxPlayers: number;
   specialVictory: boolean; // LINE Get Rich: Triple Victory & Line Victory enabled
   // Seconds per decision before the server plays the turn (0 = off).
   turnTimeoutSec: number;
+  forceBuyMode: ForceBuyMode;
+  // Occasional board-wide random events (Market Crash, Bank Bonus, ...).
+  randomEvents: boolean;
 }
 
 export interface Seat {
@@ -31,7 +40,16 @@ export interface RoomState {
   seats: Seat[];
   winnerId: string | null;
   victoryType: VictoryType | null;
+  // Server feature level (see PROTOCOL_VERSION); older servers omit it.
+  protocol?: number;
 }
+
+/**
+ * Bumped when client and server must be updated together (new lobby
+ * settings, new events...). A client talking to an older server shows a
+ * "server needs an update" notice instead of silently broken controls.
+ */
+export const PROTOCOL_VERSION = 2;
 
 // Board & Tile types
 export type TileGroup =
@@ -80,6 +98,10 @@ export interface PropertyState {
   buildLevel: BuildLevel;
   isMortgaged: boolean;
   forceBought: boolean; // true if acquired via force-buy -> landmark LOCKED (cannot upgrade to 4)
+  // The owner's lapsCompleted at the moment this was mortgaged. Once the
+  // owner has gone another FORECLOSURE_ROUNDS laps without lifting it, the
+  // Bank forecloses and auctions it off. Unset while not mortgaged.
+  mortgagedAtLap?: number;
 }
 
 export interface PlayerState {
@@ -100,6 +122,10 @@ export interface PlayerState {
   consecutiveDoubles: number;
   // Times this player has passed / landed on GO. Building on land needs >= 1.
   lapsCompleted: number;
+  // Voluntary mortgages taken this round (since the last time they passed
+  // GO). Capped at MAX_MORTGAGES_PER_ROUND; resets to 0 when lapsCompleted
+  // increments. Mortgages forced by an active debt don't count against it.
+  mortgagesThisRound: number;
   // Left the game by surrendering (also counted as bankrupt).
   surrendered?: boolean;
   // Turns in a row the server had to play for this player (turn timer).
@@ -206,6 +232,17 @@ export interface BankState {
   nextTxnId: number;
 }
 
+// Random board-wide event, rolled occasionally between turns. Only one is
+// active at a time; it clears itself once turnNumber passes expiresAtTurn.
+export type ActiveEventType = 'market_crash' | 'building_boom';
+
+export interface ActiveEvent {
+  type: ActiveEventType;
+  label: string; // shown to players, e.g. "Market Crash! Rent halved"
+  factor: number; // rent or build-cost multiplier while active
+  expiresAtTurn: number;
+}
+
 // Bank auction of a property the landing player declined / could not afford.
 export interface AuctionState {
   tileIndex: number;
@@ -244,6 +281,7 @@ export interface GameState {
   lastMove: MoveRecord | null;
   bank: BankState;
   auction: AuctionState | null;
+  activeEvent: ActiveEvent | null;
   winnerId: string | null;
   victoryType: VictoryType | null;
   lastActionText: string;

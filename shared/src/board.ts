@@ -78,9 +78,18 @@ export const SIDES_PURCHASABLE: number[][] = [
 export const STARTING_MONEY = 1500;
 export const GO_SALARY = 200;
 export const JAIL_FINE = 50;
+export const GO_TILE_INDEX = 0;
 export const JAIL_TILE_INDEX = 10;
 export const GO_TO_JAIL_TILE_INDEX = 30;
 export const FORCE_BUY_TIMER_MS = 15000;
+
+// Mortgages
+// A mortgage the owner hasn't lifted after this many of their own laps gets
+// foreclosed: the Bank seizes and auctions the deed.
+export const FORECLOSURE_ROUNDS = 3;
+// Voluntary mortgages per player per round (resets when they pass GO).
+// Doesn't limit mortgaging forced by an active debt.
+export const MAX_MORTGAGES_PER_ROUND = 1;
 
 // Bank
 export const BANK_HOUSES = 32;

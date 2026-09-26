@@ -46,7 +46,7 @@ export const ForceBuyModal: React.FC = () => {
           </span>
           <div>
             <h2>Force buy?</h2>
-            <p>Take this property at double its value. The owner can’t refuse.</p>
+            <p>Rent's already paid. Take the property too, at double its value on top -- the owner can’t refuse.</p>
           </div>
           <svg className={`fb-timer ${left <= 5 ? 'urgent' : ''}`} viewBox="0 0 48 48" aria-label={`${left} seconds left`}>
             <circle cx="24" cy="24" r="20" className="track" />
@@ -91,7 +91,7 @@ export const ForceBuyModal: React.FC = () => {
 
         <div className="modal-actions">
           <button className="btn btn-secondary btn-lg btn-decline" onClick={() => respond(false)}>
-            Pay rent
+            No thanks
           </button>
           <button className="btn btn-gold btn-lg btn-force-buy" onClick={() => respond(true)} disabled={!canAfford}>
             <Zap size={17} fill="currentColor" /> Buy for <span className="tnum">{money(offer.price)}</span>

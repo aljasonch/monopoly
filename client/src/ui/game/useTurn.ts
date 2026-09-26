@@ -1,4 +1,4 @@
-import { BOARD_TILES, GameState, PlayerState, PropertyState, TileDef, buildBlockReason } from '@monopoly/shared';
+import { BOARD_TILES, GO_TILE_INDEX, GameState, PlayerState, PropertyState, TileDef, buildBlockReason } from '@monopoly/shared';
 import { useGameStore } from '../../store/gameStore.js';
 
 export interface UpgradeOption {
@@ -24,18 +24,22 @@ export interface TurnInfo {
   // Sell / mortgage allowed right now (also during my debt).
   canManage: boolean;
   upgrade: UpgradeOption | null;
+  // Landing exactly on GO: every owned property you can build on, not just
+  // the one you're standing on.
+  goBuildOptions: UpgradeOption[];
 }
 
-// The server only allows upgrading the tile you stand on (LINE Get Rich rule).
-// Returns null when there is nothing to upgrade here at all.
-export function upgradeOptionFor(game: GameState, me: PlayerState | undefined): UpgradeOption | null {
+// The server only allows upgrading the tile you stand on (LINE Get Rich
+// rule) -- except landing exactly on GO, which allows building anywhere you
+// own. Returns null when there is nothing to upgrade at `tileIndex` at all.
+export function upgradeOptionFor(game: GameState, me: PlayerState | undefined, tileIndex: number): UpgradeOption | null {
   if (!me) return null;
-  const prop = game.properties[me.position];
-  const tile = BOARD_TILES[me.position];
+  const prop = game.properties[tileIndex];
+  const tile = BOARD_TILES[tileIndex];
   if (!prop || !tile || prop.ownerId !== me.playerId) return null;
   if (prop.isMortgaged || tile.buildCost <= 0 || prop.buildLevel >= 4) return null;
   if (prop.buildLevel === 3 && prop.forceBought) return null;
-  const blocked = buildBlockReason(game, me, me.position);
+  const blocked = buildBlockReason(game, me, tileIndex);
   const affordable = me.money >= tile.buildCost;
   return {
     prop,
@@ -46,6 +50,22 @@ export function upgradeOptionFor(game: GameState, me: PlayerState | undefined): 
     // Cash shortage is shown as a disabled price, not as a rule message.
     blocked: affordable ? blocked : null
   };
+}
+
+// Every property `me` owns that could in principle take another level, from
+// a GO building spree -- including ones a rule currently blocks (mortgaged
+// sibling in the set, bank out of supply, not yet past GO...). Those are
+// still listed, disabled, with the reason shown: silently dropping them made
+// the spree look broken ("some of my land just isn't in the list").
+function goBuildOptionsFor(game: GameState, me: PlayerState | undefined): UpgradeOption[] {
+  if (!me || me.position !== GO_TILE_INDEX) return [];
+  const options: UpgradeOption[] = [];
+  for (const tile of BOARD_TILES) {
+    if (game.properties[tile.index]?.ownerId !== me.playerId) continue;
+    const option = upgradeOptionFor(game, me, tile.index);
+    if (option) options.push(option);
+  }
+  return options;
 }
 
 export function useTurn(): TurnInfo | null {
@@ -72,6 +92,7 @@ export function useTurn(): TurnInfo | null {
     d2: diceRoll?.d2 ?? game.dice?.[1] ?? 1,
     canAct,
     canManage,
-    upgrade: canAct ? upgradeOptionFor(game, me) : null
+    upgrade: canAct && me ? upgradeOptionFor(game, me, me.position) : null,
+    goBuildOptions: canAct ? goBuildOptionsFor(game, me) : []
   };
 }

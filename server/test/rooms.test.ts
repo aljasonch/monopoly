@@ -122,6 +122,20 @@ describe('RoomManager sessions', () => {
     expect(room.settings.turnTimeoutSec).toBe(60);
   });
 
+  it('room state always carries complete settings and the protocol version', () => {
+    const room = manager.createRoom('socket-host', 'p-host', 'Host');
+    // A room created by older code has no force-buy / random-events fields.
+    const legacy = room.settings as Partial<typeof room.settings>;
+    delete legacy.forceBuyMode;
+    delete legacy.randomEvents;
+    const state = manager.toRoomState(room);
+    expect(state.settings.forceBuyMode).toBe('developed');
+    expect(state.settings.randomEvents).toBe(true);
+    expect(state.protocol).toBeGreaterThanOrEqual(2);
+    expect(manager.setForceBuyMode(room.roomId, 'p-host', 'any')).toBe(true);
+    expect(manager.toRoomState(room).settings.forceBuyMode).toBe('any');
+  });
+
   it('idle rooms are cleaned up', () => {
     const room = manager.createRoom('socket-host', 'p-host', 'Host');
     manager.handleDisconnect('socket-host');

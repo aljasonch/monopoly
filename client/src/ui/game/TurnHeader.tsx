@@ -18,6 +18,11 @@ export const TurnIdentity: React.FC<{ turn: TurnInfo; size?: number }> = ({ turn
         <span className="turn-sub">
           Turn {game.turnNumber} · {PHASE_LABEL[game.phase]}
         </span>
+        {game.activeEvent && (
+          <span className="badge gold event-badge" title={`Active until turn ${game.activeEvent.expiresAtTurn}`}>
+            {game.activeEvent.label}
+          </span>
+        )}
       </div>
     </div>
   );

@@ -1,105 +1,42 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { socket, saveSession, loadSession, loadRecentSessions } from '../net/socket.js';
-import { useAccount } from '../net/account.js';
+import React, { useRef, useState } from 'react';
+import { useRoomEntry } from './home/useRoomEntry.js';
 import { ResumeCard } from './session/Resume.js';
 import { AccountChip } from './session/AccountChip.js';
 import { LeaderboardButton } from './session/Leaderboard.js';
-import { useGameStore } from '../store/gameStore.js';
 import {
   ArrowRight,
-  Banknote,
   Car,
-  Castle,
   Crown,
-  Handshake,
   History,
   KeyRound,
   LogIn,
   Plus,
-  Swords,
-  Trophy,
   User
 } from 'lucide-react';
 import { Logo, Sky } from './common/Sky.js';
-import { PipDie } from './PipDie.js';
 import { useInstall } from '../hooks/useInstall.js';
 import { Download, Share } from 'lucide-react';
 
-// House rules, dealt like a hand of Chance cards.
-const RULE_CARDS = [
-  { icon: Swords, title: 'Force buy', text: 'Snatch a rival’s built city for double its value.', tone: 'red' },
-  { icon: Castle, title: 'Landmarks', text: 'Build house, building, hotel, then an untouchable landmark.', tone: 'orange' },
-  { icon: Trophy, title: 'Instant wins', text: 'Own three full countries or a whole side of the board.', tone: 'gold' },
-  { icon: Handshake, title: 'Wheel & deal', text: 'Trade cash and cities with anyone, any time.', tone: 'blue' },
-  { icon: Banknote, title: 'Never broke', text: 'Sell, mortgage or trade your way out of debt.', tone: 'green' }
-] as const;
-
-// A CSS 3D die: faces 1..6, tumbles now and then (pure transforms).
-const Die3D: React.FC<{ className?: string }> = ({ className = '' }) => (
-  <div className={`die3d ${className}`} aria-hidden="true">
-    <div className="die3d-cube">
-      {[1, 2, 3, 4, 5, 6].map((n) => (
-        <span key={n} className={`die3d-face f${n}`}>
-          <PipDie value={n} size={58} />
-        </span>
-      ))}
-    </div>
-  </div>
-);
+import { Die3D, RULE_CARDS } from './home/homeParts.js';
+import { MobileHome } from './home/MobileHome.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 type Mode = 'create' | 'join';
 
-export const HomeScreen: React.FC = () => {
-  const saved = loadSession() ?? loadRecentSessions()[0] ?? null;
-  const accountName = useAccount((s) => (s.anonymous ? null : s.name));
-  const [name, setName] = useState(saved?.name || '');
+// Phones get the game-style main menu; larger screens the full page.
+export const HomeScreen: React.FC = () => (useIsMobile() ? <MobileHome /> : <DesktopHome />);
+
+const DesktopHome: React.FC = () => {
+  const { name, setName, busy, create: handleCreate, join } = useRoomEntry();
   const [joinCode, setJoinCode] = useState('');
   const [mode, setMode] = useState<Mode>('create');
-
-  // Prefill the name from a Google account once it is known.
-  useEffect(() => {
-    if (accountName && !name) setName(accountName.slice(0, 15));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountName]);
-  const [busy, setBusy] = useState(false);
   const [codeFocus, setCodeFocus] = useState(false);
   const [openCard, setOpenCard] = useState<number | null>(null);
   const codeRef = useRef<HTMLInputElement>(null);
-  const addToast = useGameStore((s) => s.addToast);
   const install = useInstall();
   const [iosHelp, setIosHelp] = useState(false);
 
-  const handleCreate = () => {
-    if (!name.trim()) return addToast('Enter your name first', 'warning');
-    setBusy(true);
-    socket.emit('room:create', { name: name.trim() }, (res) => {
-      setBusy(false);
-      if (!res.ok || !res.roomId || !res.playerId || !res.token) {
-        addToast(res.error || 'Failed to create room', 'danger');
-      } else {
-        useGameStore.getState().setMyPlayerId(res.playerId);
-        saveSession({ roomId: res.roomId, playerId: res.playerId, token: res.token, name: name.trim() });
-      }
-    });
-  };
-
-  const handleJoin = () => {
-    if (!name.trim()) return addToast('Enter your name first', 'warning');
-    if (joinCode.trim().length < 6) return addToast('Enter the 6-character room code', 'warning');
-    setBusy(true);
-    const code = joinCode.trim().toUpperCase();
-    // A seat this browser already holds in that room is reclaimed with its token.
-    const mine = loadRecentSessions().find((r) => r.roomId === code);
-    socket.emit('room:join', { roomId: code, name: name.trim(), token: mine?.token }, (res) => {
-      setBusy(false);
-      if (!res.ok || !res.playerId || !res.token) {
-        addToast(res.error || 'Failed to join room', 'danger');
-      } else {
-        useGameStore.getState().setMyPlayerId(res.playerId);
-        saveSession({ roomId: code, playerId: res.playerId, token: res.token, name: name.trim() });
-      }
-    });
-  };
+  const handleJoin = () => join(joinCode);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();

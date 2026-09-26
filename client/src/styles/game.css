@@ -1327,6 +1327,92 @@ button.deed-chip:active:not(:disabled) {
   font-size: 1.6rem;
 }
 
+/* ------------------------------------------------------------------ */
+/* Random board event banner                                          */
+/* ------------------------------------------------------------------ */
+.event-banner {
+  position: fixed;
+  z-index: 130;
+  left: 50%;
+  top: 30%;
+  transform: translate(-50%, -50%);
+  width: min(480px, calc(100vw - 48px));
+  pointer-events: none;
+  /* Same pop-in/out shape as the GO banner, just held on screen far
+     longer so the (often longer) event text can actually be read. */
+  animation: go-pop 5.2s var(--ease-spring) forwards;
+}
+
+.event-banner-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 22px;
+  border-radius: 22px;
+  background: var(--paper);
+  border: var(--line);
+  box-shadow: 0 6px 0 var(--ink), 0 20px 40px rgba(43, 29, 16, 0.35);
+}
+
+.event-banner-icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  color: var(--ink);
+  background: var(--gold);
+  border: var(--line);
+}
+
+.event-banner.success .event-banner-icon {
+  background: var(--green);
+  color: #fff;
+}
+.event-banner.warning .event-banner-icon {
+  background: var(--warning);
+}
+.event-banner.danger .event-banner-icon {
+  background: var(--red);
+  color: #fff;
+}
+
+.event-banner-copy {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.event-banner-title {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  color: var(--red);
+  -webkit-text-stroke: 0.6px var(--ink);
+  paint-order: stroke fill;
+}
+
+.event-banner-text {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.layout-mobile .event-banner {
+  top: 24%;
+  width: min(360px, calc(100vw - 32px));
+}
+
+.layout-mobile .event-banner-title {
+  font-size: 1.1rem;
+}
+
+.layout-mobile .event-banner-text {
+  font-size: 0.85rem;
+}
+
 .scene-loading,
 .gl-lost {
   position: absolute;

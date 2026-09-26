@@ -7,6 +7,7 @@ import {
 const PLAYER_ID_KEY = 'monopoly_player_id';
 const SESSION_KEY = 'monopoly_session_v2';
 const RECENT_KEY = 'tmpoly_recent_sessions';
+const LAST_NAME_KEY = 'tmpoly_last_name';
 
 /** A seat this browser holds: room, identity and the seat's secret token. */
 export interface PersistedSession {
@@ -89,6 +90,15 @@ export function clearSession(): void {
   const s = loadSession();
   remove('session', SESSION_KEY);
   if (s) forgetRecent(s.roomId, s.playerId);
+}
+
+// Whatever name the player last typed, so the field isn't blank next visit.
+export function saveLastName(name: string): void {
+  if (name.trim()) write('local', LAST_NAME_KEY, name);
+}
+
+export function loadLastName(): string {
+  return read('local', LAST_NAME_KEY) ?? '';
 }
 
 export function loadRecentSessions(): PersistedSession[] {
